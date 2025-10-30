@@ -574,10 +574,18 @@ final class GReaderAPI {
             continue;
         }
         $entry->_feed($feed);
-// 1. 先生成基础的文章对象
-        $gReaderItem = $entry->toGReader('compat', $entryIdsTagNames['e_' . $entry->id()] ?? []);
+ // 1. 获取这篇文章的所有自定义标签名
+        $customTags = $entryIdsTagNames['e_' . $entry->id()] ?? [];
 
-        // 2. 【核心修改】无论如何，都为文章对象补充 annotations 字段
+        // 2. 先生成基础的文章对象
+        //    注意：toGReader 内部会把 $customTags 转换成 categories 字段
+        $gReaderItem = $entry->toGReader('compat', $customTags);
+
+        // 3. 【核心修改】为文章对象补充一个清晰、独立的 `tags` 字段
+        //    这个字段将包含一个简单的字符串数组，正是前端所需要的
+        $gReaderItem['tags'] = $customTags;
+
+        // 4. 补充 annotations 字段用于表示已读/收藏状态
         $annotations = [];
         if ($entry->isRead()) {
             $annotations[] = ['id' => 'user/-/state/com.google/read'];
@@ -585,19 +593,14 @@ final class GReaderAPI {
         if ($entry->isFavorite()) {
             $annotations[] = ['id' => 'user/-/state/com.google/starred'];
         }
-        // 如果需要，还可以添加更多系统标签
-        // $annotations[] = ['id' => 'user/-/state/com.google/reading-list'];
-        
-        // 将生成的 annotations 数组添加到文章对象中
-        // 如果 gReaderItem 中已经有 annotations (例如来自 toGReader)，则合并
         $gReaderItem['annotations'] = array_merge($gReaderItem['annotations'] ?? [], $annotations);
 
-
-        // 3. 根据 excludeContent 参数决定是否移除内容字段
+        // 5. 根据 excludeContent 参数决定是否移除内容字段
         if ($excludeContent) {
             unset($gReaderItem['content']);
             unset($gReaderItem['summary']); 
         }
+
 
         $items[] = $gReaderItem;
     }
