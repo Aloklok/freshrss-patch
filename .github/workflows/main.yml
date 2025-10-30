@@ -49,6 +49,5 @@ jobs:
         uses: docker/build-push-action@v4
         with:
           context: ./freshrss-source # 指定 Dockerfile 的上下文路径
-          file: ./freshrss-source/Dockerfile # 指定 Dockerfile 的确切位置
           push: true
-          tags: aloklok/freshrss-custom:latest # 替换成你的 Docker Hub 仓库名
+          tags: aloklok/freshrss-custom:latest  
