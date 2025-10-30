@@ -2,7 +2,12 @@ name: Build and Push Custom FreshRSS Image
 
 on:
   workflow_dispatch:
-
+push:
+    branches:
+      - main # 监听 main 分支的推送。请根据你的实际默认分支名调整 (如 master)
+    paths:
+      - 'greader.php' 
+  
 jobs:
   build:
     runs-on: ubuntu-latest
