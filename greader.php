@@ -574,16 +574,30 @@ final class GReaderAPI {
             continue;
         }
         $entry->_feed($feed);
-
+// 1. 先生成基础的文章对象
         $gReaderItem = $entry->toGReader('compat', $entryIdsTagNames['e_' . $entry->id()] ?? []);
 
-        // --- 核心过滤逻辑 ---
+        // 2. 【核心修改】无论如何，都为文章对象补充 annotations 字段
+        $annotations = [];
+        if ($entry->isRead()) {
+            $annotations[] = ['id' => 'user/-/state/com.google/read'];
+        }
+        if ($entry->isFavorite()) {
+            $annotations[] = ['id' => 'user/-/state/com.google/starred'];
+        }
+        // 如果需要，还可以添加更多系统标签
+        // $annotations[] = ['id' => 'user/-/state/com.google/reading-list'];
+        
+        // 将生成的 annotations 数组添加到文章对象中
+        // 如果 gReaderItem 中已经有 annotations (例如来自 toGReader)，则合并
+        $gReaderItem['annotations'] = array_merge($gReaderItem['annotations'] ?? [], $annotations);
+
+
+        // 3. 根据 excludeContent 参数决定是否移除内容字段
         if ($excludeContent) {
-					// 无论内容在哪里，都将其移除
-					unset($gReaderItem['content']);
-					unset($gReaderItem['summary']); 
-			}
-        // --- 结束 ---
+            unset($gReaderItem['content']);
+            unset($gReaderItem['summary']); 
+        }
 
         $items[] = $gReaderItem;
     }
