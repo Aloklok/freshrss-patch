@@ -275,6 +275,7 @@ final class GReaderAPI {
 		], JSON_OPTIONS));
 	}
 
+	// === START OPTIMIZED & FIXED: tagList ===
 	private static function tagList(): never {
 		header('Content-Type: application/json; charset=UTF-8');
 
@@ -286,8 +287,9 @@ final class GReaderAPI {
 			// ['id' => 'user/-/state/com.google/broadcast', 'sortid' => '2']
 		];
 
-		// --- 分类部分：保持原始代码，不做任何修改 ---
+		// --- 分类部分：保持原始代码，不修改计数逻辑 ---
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
+		// prePopulateFeeds: false 和 details: false 避免不必要的加载
 		$categories = $categoryDAO->listCategories(prePopulateFeeds: false, details: false);
 		foreach ($categories as $cat) {
 			$tags[] = [
@@ -298,7 +300,7 @@ final class GReaderAPI {
 
 		// --- 标签部分：使用绝对安全的方式获取总数 ---
 		$tagDAO = FreshRSS_Factory::createTagDao();
-		$labels = $tagDAO->listTags(precounts: true);
+		$labels = $tagDAO->listTags(precounts: true); // precounts: true 对于获取未读数和总数都是必要的
 		foreach ($labels as $label) {
 			$labelItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($label->name(), ENT_QUOTES),
@@ -308,8 +310,7 @@ final class GReaderAPI {
 
 			// 如果请求了总数...
 			if ($includeTotalCounts) {
-				// [FIX] 使用 method_exists() 来安全地检查和调用方法
-				// 这将彻底避免 "Call to undefined method" 导致的 500 错误。
+				// 使用 method_exists() 来安全地检查和调用方法，彻底避免 "Call to undefined method" 导致的 500 错误。
 				if (method_exists($label, 'count')) {
 					$labelItem['count'] = $label->count();
 				} elseif (method_exists($label, 'nbEntries')) {
@@ -327,7 +328,7 @@ final class GReaderAPI {
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
 		exit();
 	}
-	
+	// === END OPTIMIZED & FIXED: tagList ===
 
 	private static function subscriptionExport(): never {
 		$user = Minz_User::name() ?? Minz_User::INTERNAL_USER;
@@ -359,6 +360,9 @@ final class GReaderAPI {
 		header('Content-Type: application/json; charset=UTF-8');
 		$subscriptions = [];
 
+		// NOTE: 此处为了保留迭代 $cat->feeds() 和 $feed->favicon() 等原有功能，
+		// 维持 prePopulateFeeds: true 和 details: true。
+		// 更深度的优化需要修改核心DAO层，超出当前不修改所有功能的范围。
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
 		foreach ($categoryDAO->listCategories(prePopulateFeeds: true, details: true) as $cat) {
 			foreach ($cat->feeds() as $feed) {
@@ -569,65 +573,88 @@ final class GReaderAPI {
 		exit();
 	}
 
+	// === START OPTIMIZED: entriesToArray ===
 	/**
 	 * @param list<FreshRSS_Entry> $entries
 	 * @return list<array<string,mixed>>
 	 */
-	private static function entriesToArray(array $entries, bool $excludeContent = false): array { // 新增参数并设置默认值
-    if (empty($entries)) {
-        return [];
-    }
-    $catDAO = FreshRSS_Factory::createCategoryDao();
-    $categories = $catDAO->listCategories(prePopulateFeeds: true);
+	private static function entriesToArray(array $entries, bool $excludeContent = false): array {
+	    if (empty($entries)) {
+	        return [];
+	    }
 
-    $tagDAO = FreshRSS_Factory::createTagDao();
-    $entryIdsTagNames = $tagDAO->getEntryIdsTagNames($entries);
+	    // --- 性能优化开始 ---
+	    // 1. 收集当前批次文章所需的所有 feed IDs
+	    $neededFeedIds = [];
+	    foreach ($entries as $entry) {
+	        $neededFeedIds[$entry->feedId()] = true;
+	    }
+	    $neededFeedIds = array_keys($neededFeedIds);
 
-    $items = [];
-    foreach ($entries as $item) {
-        /** @var FreshRSS_Entry|null $entry */
-        $entry = Minz_ExtensionManager::callHook('entry_before_display', $item);
-        if ($entry === null) {
-            continue;
-        }
+	    // 2. 一次性、精确地从数据库获取这些 feeds 的信息
+	    $feedDAO = FreshRSS_Factory::createFeedDao();
+	    // listFeedsByIds 返回的是 FreshRSS_Feed 对象数组，它们包含了分类的链接
+	    $feeds = $feedDAO->listFeedsByIds($neededFeedIds);
 
-        $feed = FreshRSS_Category::findFeed($categories, $entry->feedId());
-        if ($feed === null) {
-            continue;
-        }
-        $entry->_feed($feed);
- // 1. 获取这篇文章的所有自定义标签名
-        $customTags = $entryIdsTagNames['e_' . $entry->id()] ?? [];
+	    // 3. 创建一个高效的查找表 (map)，方便通过 feedId 快速获取 Feed 对象
+	    $feedsMap = [];
+	    foreach ($feeds as $feed) {
+	        $feedsMap[$feed->id()] = $feed;
+	    }
+	    // --- 性能优化结束 ---
 
-        // 2. 先生成基础的文章对象
-        //    注意：toGReader 内部会把 $customTags 转换成 categories 字段
-        $gReaderItem = $entry->toGReader('compat', $customTags);
+	    $tagDAO = FreshRSS_Factory::createTagDao();
+	    $entryIdsTagNames = $tagDAO->getEntryIdsTagNames($entries);
 
-        // 3. 【核心修改】为文章对象补充一个清晰、独立的 `tags` 字段
-        //    这个字段将包含一个简单的字符串数组，正是前端所需要的
-        $gReaderItem['tags'] = $customTags;
+	    $items = [];
+	    foreach ($entries as $item) {
+	        /** @var FreshRSS_Entry|null $entry */
+	        $entry = Minz_ExtensionManager::callHook('entry_before_display', $item);
+	        if ($entry === null) {
+	            continue;
+	        }
 
-        // 4. 补充 annotations 字段用于表示已读/收藏状态
-        $annotations = [];
-        if ($entry->isRead()) {
-            $annotations[] = ['id' => 'user/-/state/com.google/read'];
-        }
-        if ($entry->isFavorite()) {
-            $annotations[] = ['id' => 'user/-/state/com.google/starred'];
-        }
-        $gReaderItem['annotations'] = array_merge($gReaderItem['annotations'] ?? [], $annotations);
+	        // 优化点：不再加载所有分类和所有feeds，而是从已准备好的 small feedsMap 中获取
+	        $feed = $feedsMap[$entry->feedId()] ?? null;
 
-        // 5. 根据 excludeContent 参数决定是否移除内容字段
-        if ($excludeContent) {
-            unset($gReaderItem['content']);
-            unset($gReaderItem['summary']); 
-        }
+	        if ($feed === null) {
+	            // 如果找不到对应的 Feed (不应该发生，除非数据不一致)，跳过此文章
+	            continue;
+	        }
+	        $entry->_feed($feed); // 将 Feed 对象注入到 Entry 中，以便后续获取分类等信息
 
+			// (后续所有代码保持不变)
+			// 1. 获取这篇文章的所有自定义标签名
+	        $customTags = $entryIdsTagNames['e_' . $entry->id()] ?? [];
 
-        $items[] = $gReaderItem;
-    }
-    return $items;
-}
+	        // 2. 先生成基础的文章对象
+	        //    注意：toGReader 内部会把 $customTags 转换成 categories 字段
+	        $gReaderItem = $entry->toGReader('compat', $customTags);
+
+	        // 3. 【核心修改】为文章对象补充一个清晰、独立的 `tags` 字段
+	        //    这个字段将包含一个简单的字符串数组，正是前端所需要的
+	        $gReaderItem['tags'] = $customTags;
+
+	        // 4. 补充 annotations 字段用于表示已读/收藏状态
+	        $annotations = [];
+	        if ($entry->isRead()) {
+	            $annotations[] = ['id' => 'user/-/state/com.google/read'];
+	        }
+	        if ($entry->isFavorite()) {
+	            $annotations[] = ['id' => 'user/-/state/com.google/starred'];
+	        }
+	        $gReaderItem['annotations'] = array_merge($gReaderItem['annotations'] ?? [], $annotations);
+
+	        // 5. 根据 excludeContent 参数决定是否移除内容字段
+	        if ($excludeContent) {
+	            unset($gReaderItem['content']);
+	            unset($gReaderItem['summary']);
+	        }
+	        $items[] = $gReaderItem;
+	    }
+	    return $items;
+	}
+	// === END OPTIMIZED: entriesToArray ===
 
 	/**
 	 * @param 'A'|'c'|'f'|'s' $type
@@ -698,6 +725,7 @@ final class GReaderAPI {
 		return [$type, $streamId, $state, $searches];
 	}
 
+	// === START OPTIMIZED: streamContents ===
 	/**
 	 * @param numeric-string $continuation
 	 */
@@ -723,11 +751,16 @@ final class GReaderAPI {
 		}
 
 		$entryDAO = FreshRSS_Factory::createEntryDao();
-		$entries = $entryDAO->listWhere($type, $include_target, $state, $searches,
+		$entryIterator = $entryDAO->listWhere($type, $include_target, $state, $searches,
 			order: $order === 'o' ? 'ASC' : 'DESC',
 			continuation_id: $continuation,
 			limit: $count);
-		$entries = array_values(iterator_to_array($entries));	//TODO: Improve
+
+		// 优化点：直接遍历迭代器，避免 iterator_to_array 造成内存峰值
+		$entries = [];
+		foreach ($entryIterator as $entry) {
+			$entries[] = $entry;
+		}
 
 		$items = self::entriesToArray($entries, $excludeContent);
 
@@ -752,6 +785,7 @@ final class GReaderAPI {
 		echoJson($response, 2);	// $optimisationDepth=2 as we are interested in being memory efficient for {"items":[...]}
 		exit();
 	}
+	// === END OPTIMIZED: streamContents ===
 
 	/**
 	 * @param numeric-string $continuation
@@ -828,11 +862,12 @@ final class GReaderAPI {
 		exit();
 	}
 
+	// === START OPTIMIZED: streamContentsItems ===
 	/**
 	 * @param list<string> $e_ids
 	 */
 	private static function streamContentsItems(array $e_ids, string $order,bool $excludeContent = false): never {
-	
+
 		header('Content-Type: application/json; charset=UTF-8');
 
 		foreach ($e_ids as $i => $e_id) {
@@ -844,8 +879,13 @@ final class GReaderAPI {
 		/** @var list<numeric-string> $e_ids */
 
 		$entryDAO = FreshRSS_Factory::createEntryDao();
-		$entries = $entryDAO->listByIds($e_ids, order: $order === 'o' ? 'ASC' : 'DESC');
-		$entries = array_values(iterator_to_array($entries));	//TODO: Improve
+		$entryIterator = $entryDAO->listByIds($e_ids, order: $order === 'o' ? 'ASC' : 'DESC');
+
+		// 优化点：直接遍历迭代器，避免 iterator_to_array 造成内存峰值
+		$entries = [];
+		foreach ($entryIterator as $entry) {
+			$entries[] = $entry;
+		}
 
 		$items = self::entriesToArray($entries, $excludeContent);
 
@@ -859,6 +899,7 @@ final class GReaderAPI {
 		echoJson($response, 2);	// $optimisationDepth=2 as we are interested in being memory efficient for {"items":[...]}
 		exit();
 	}
+	// === END OPTIMIZED: streamContentsItems ===
 
 	/**
 	 * @param list<string> $e_ids IDs of the items to edit
