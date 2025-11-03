@@ -560,7 +560,7 @@ final class GReaderAPI {
 		exit();
 	}
 
-	// === START FULLY OPTIMIZED: entriesToArray ===
+	// === START FINAL VERSION: entriesToArray (with backward compatibility) ===
 	/**
 	 * @param list<FreshRSS_Entry> $entries
 	 * @return list<array<string,mixed>>
@@ -570,26 +570,37 @@ final class GReaderAPI {
 			return [];
 		}
 
-		// --- 性能优化开始: 按需精确加载 Feed 信息 ---
-		// 1. 收集当前批次文章所需的所有 feed IDs，并去重
-		$neededFeedIds = [];
-		foreach ($entries as $entry) {
-			$neededFeedIds[$entry->feedId()] = true;
-		}
-		$neededFeedIds = array_keys($neededFeedIds);
-
-		// 2. 一次性、精确地从数据库获取这些 feeds 的信息
-		//    这是通过我们添加到 FeedDAO.php 的新方法实现的
 		$feedDAO = FreshRSS_Factory::createFeedDao();
-		$feeds = $feedDAO->listFeedsByIds($neededFeedIds);
+		$feed = null;
 
-		// 3. 创建一个高效的查找表 (map)，方便通过 feedId 快速获取 Feed 对象
-		//    键是 feedId，值是 FreshRSS_Feed 对象
-		$feedsMap = [];
-		foreach ($feeds as $feed) {
-			$feedsMap[$feed->id()] = $feed;
+		// --- 智能优化逻辑开始 ---
+		// 检查 FeedDAO 是否具备我们新增的高效方法
+		if (method_exists($feedDAO, 'listFeedsByIds')) {
+			// 路径 A：优化路径 (如果 FeedDAO.php 已更新)
+
+			// 1. 收集当前批次文章所需的所有 feed IDs
+			$neededFeedIds = [];
+			foreach ($entries as $entry) {
+				$neededFeedIds[$entry->feedId()] = true;
+			}
+			$neededFeedIds = array_keys($neededFeedIds);
+
+			// 2. 调用新方法，一次性、精确地获取这些 feeds 的信息
+			$feeds = $feedDAO->listFeedsByIds($neededFeedIds);
+
+			// 3. 创建一个高效的查找表 (map)
+			$feedsMap = [];
+			foreach ($feeds as $feedObject) {
+				$feedsMap[$feedObject->id()] = $feedObject;
+			}
+		} else {
+			// 路径 B：原始路径 (兼容旧版 FeedDAO.php)
+			// 如果新方法不存在，则回退到加载所有分类和订阅的旧逻辑
+			$catDAO = FreshRSS_Factory::createCategoryDao();
+			$categories = $catDAO->listCategories(prePopulateFeeds: true);
 		}
-		// --- 性能优化结束 ---
+		// --- 智能优化逻辑结束 ---
+
 
 		$tagDAO = FreshRSS_Factory::createTagDao();
 		$entryIdsTagNames = $tagDAO->getEntryIdsTagNames($entries);
@@ -602,14 +613,19 @@ final class GReaderAPI {
 				continue;
 			}
 
-			// 优化点: 不再从包含所有订阅的巨大数组中查找，而是从精确的小映射中 O(1) 复杂度获取
-			$feed = $feedsMap[$entry->feedId()] ?? null;
+			// 根据上面执行的路径，选择不同的方式来获取 feed 对象
+			if (isset($feedsMap)) {
+				// 优化路径：直接从 map 中获取
+				$feed = $feedsMap[$entry->feedId()] ?? null;
+			} elseif (isset($categories)) {
+				// 原始路径：从所有分类中查找
+				$feed = FreshRSS_Category::findFeed($categories, $entry->feedId());
+			}
 
 			if ($feed === null) {
-				// 如果找不到对应的 Feed (不应该发生)，跳过此文章以保证健壮性
 				continue;
 			}
-			$entry->_feed($feed); // 将 Feed 对象注入到 Entry 中
+			$entry->_feed($feed);
 
 			// (后续所有代码保持不变)
 			$customTags = $entryIdsTagNames['e_' . $entry->id()] ?? [];
@@ -631,7 +647,7 @@ final class GReaderAPI {
 		}
 		return $items;
 	}
-	// === END FULLY OPTIMIZED: entriesToArray ===
+	// === END FINAL VERSION: entriesToArray ===
 
 	/**
 	 * @param 'A'|'c'|'f'|'s' $type
