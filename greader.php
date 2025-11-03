@@ -275,7 +275,6 @@ final class GReaderAPI {
 		], JSON_OPTIONS));
 	}
 
-	// === START FIXED: tagList ===
 	private static function tagList(): never {
 		header('Content-Type: application/json; charset=UTF-8');
 
@@ -320,7 +319,6 @@ final class GReaderAPI {
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
 		exit();
 	}
-	// === END FIXED: tagList ===
 
 	private static function subscriptionExport(): never {
 		$user = Minz_User::name() ?? Minz_User::INTERNAL_USER;
@@ -562,18 +560,36 @@ final class GReaderAPI {
 		exit();
 	}
 
-	// === START REVERTED: entriesToArray (to fix fatal error) ===
+	// === START FULLY OPTIMIZED: entriesToArray ===
 	/**
 	 * @param list<FreshRSS_Entry> $entries
 	 * @return list<array<string,mixed>>
 	 */
-	private static function entriesToArray(array $entries, bool $excludeContent = false): array { // 新增参数并设置默认值
+	private static function entriesToArray(array $entries, bool $excludeContent = false): array {
 		if (empty($entries)) {
 			return [];
 		}
-		// REVERT: 回退到原始的、虽然效率较低但功能正常的实现，以避免 listFeedsByIds() 的致命错误。
-		$catDAO = FreshRSS_Factory::createCategoryDao();
-		$categories = $catDAO->listCategories(prePopulateFeeds: true);
+
+		// --- 性能优化开始: 按需精确加载 Feed 信息 ---
+		// 1. 收集当前批次文章所需的所有 feed IDs，并去重
+		$neededFeedIds = [];
+		foreach ($entries as $entry) {
+			$neededFeedIds[$entry->feedId()] = true;
+		}
+		$neededFeedIds = array_keys($neededFeedIds);
+
+		// 2. 一次性、精确地从数据库获取这些 feeds 的信息
+		//    这是通过我们添加到 FeedDAO.php 的新方法实现的
+		$feedDAO = FreshRSS_Factory::createFeedDao();
+		$feeds = $feedDAO->listFeedsByIds($neededFeedIds);
+
+		// 3. 创建一个高效的查找表 (map)，方便通过 feedId 快速获取 Feed 对象
+		//    键是 feedId，值是 FreshRSS_Feed 对象
+		$feedsMap = [];
+		foreach ($feeds as $feed) {
+			$feedsMap[$feed->id()] = $feed;
+		}
+		// --- 性能优化结束 ---
 
 		$tagDAO = FreshRSS_Factory::createTagDao();
 		$entryIdsTagNames = $tagDAO->getEntryIdsTagNames($entries);
@@ -586,24 +602,19 @@ final class GReaderAPI {
 				continue;
 			}
 
-			// REVERT: 使用原始的 findFeed 方法
-			$feed = FreshRSS_Category::findFeed($categories, $entry->feedId());
+			// 优化点: 不再从包含所有订阅的巨大数组中查找，而是从精确的小映射中 O(1) 复杂度获取
+			$feed = $feedsMap[$entry->feedId()] ?? null;
+
 			if ($feed === null) {
+				// 如果找不到对应的 Feed (不应该发生)，跳过此文章以保证健壮性
 				continue;
 			}
-			$entry->_feed($feed);
-			// 1. 获取这篇文章的所有自定义标签名
+			$entry->_feed($feed); // 将 Feed 对象注入到 Entry 中
+
+			// (后续所有代码保持不变)
 			$customTags = $entryIdsTagNames['e_' . $entry->id()] ?? [];
-
-			// 2. 先生成基础的文章对象
-			//    注意：toGReader 内部会把 $customTags 转换成 categories 字段
 			$gReaderItem = $entry->toGReader('compat', $customTags);
-
-			// 3. 【核心修改】为文章对象补充一个清晰、独立的 `tags` 字段
-			//    这个字段将包含一个简单的字符串数组，正是前端所需要的
 			$gReaderItem['tags'] = $customTags;
-
-			// 4. 补充 annotations 字段用于表示已读/收藏状态
 			$annotations = [];
 			if ($entry->isRead()) {
 				$annotations[] = ['id' => 'user/-/state/com.google/read'];
@@ -612,19 +623,15 @@ final class GReaderAPI {
 				$annotations[] = ['id' => 'user/-/state/com.google/starred'];
 			}
 			$gReaderItem['annotations'] = array_merge($gReaderItem['annotations'] ?? [], $annotations);
-
-			// 5. 根据 excludeContent 参数决定是否移除内容字段
 			if ($excludeContent) {
 				unset($gReaderItem['content']);
 				unset($gReaderItem['summary']);
 			}
-
-
 			$items[] = $gReaderItem;
 		}
 		return $items;
 	}
-	// === END REVERTED: entriesToArray ===
+	// === END FULLY OPTIMIZED: entriesToArray ===
 
 	/**
 	 * @param 'A'|'c'|'f'|'s' $type
@@ -695,7 +702,6 @@ final class GReaderAPI {
 		return [$type, $streamId, $state, $searches];
 	}
 
-	// === START OPTIMIZED: streamContents ===
 	/**
 	 * @param numeric-string $continuation
 	 */
@@ -755,7 +761,6 @@ final class GReaderAPI {
 		echoJson($response, 2);	// $optimisationDepth=2 as we are interested in being memory efficient for {"items":[...]}
 		exit();
 	}
-	// === END OPTIMIZED: streamContents ===
 
 	/**
 	 * @param numeric-string $continuation
@@ -832,7 +837,6 @@ final class GReaderAPI {
 		exit();
 	}
 
-	// === START OPTIMIZED: streamContentsItems ===
 	/**
 	 * @param list<string> $e_ids
 	 */
@@ -869,7 +873,6 @@ final class GReaderAPI {
 		echoJson($response, 2);	// $optimisationDepth=2 as we are interested in being memory efficient for {"items":[...]}
 		exit();
 	}
-	// === END OPTIMIZED: streamContentsItems ===
 
 	/**
 	 * @param list<string> $e_ids IDs of the items to edit
