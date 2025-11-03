@@ -282,47 +282,39 @@ final class GReaderAPI {
 
 		$tags = [
 			['id' => 'user/-/state/com.google/starred'],
+			// ['id' => 'user/-/state/com.google/broadcast', 'sortid' => '2']
 		];
 
-		// --- START CATEGORY BLOCK ---
+		// --- CATEGORY BLOCK (保持原样，不进行计数) ---
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
-		$categories = $categoryDAO->listCategories(
-			prePopulateFeeds: false,
-			details: $includeTotalCounts
-		);
+		$categories = $categoryDAO->listCategories(prePopulateFeeds: false, details: false);
 		foreach ($categories as $cat) {
-			$categoryItem = [
+			$tags[] = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($cat->name(), ENT_QUOTES),
-				'type' => 'folder',
+				'type' => 'folder',	//Inoreader
 			];
-
-			if ($includeTotalCounts) {
-				$categoryItem['count'] = $cat->nbEntries();
-				$categoryItem['unread_count'] = $cat->nbNotRead();
-			}
-
-			$tags[] = $categoryItem;
 		}
 		// --- END CATEGORY BLOCK ---
 
 
-		/* --- TAG BLOCK TEMPORARILY DISABLED FOR TESTING ---
+		// --- TAG BLOCK (添加了可选的 count) ---
 		$tagDAO = FreshRSS_Factory::createTagDao();
-		$labels = $tagDAO->listTags(precounts: true);
+		$labels = $tagDAO->listTags(precounts: true); // precounts: true 必须为 true
 		foreach ($labels as $label) {
 			$labelItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($label->name(), ENT_QUOTES),
-				'type' => 'tag',
-				'unread_count' => $label->nbUnread(),
+				'type' => 'tag',	//Inoreader
+				'unread_count' => $label->nbUnread(),	//Inoreader
 			];
 
+			// 只有在请求时，才添加标签的总数
 			if ($includeTotalCounts) {
 				$labelItem['count'] = $label->count();
 			}
 
 			$tags[] = $labelItem;
 		}
-		*/
+		// --- END TAG BLOCK ---
 
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
 		exit();
