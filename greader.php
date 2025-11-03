@@ -285,11 +285,13 @@ final class GReaderAPI {
 			['id' => 'user/-/state/com.google/starred'],
 			// ['id' => 'user/-/state/com.google/broadcast', 'sortid' => '2']
 		];
+
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
-		// 2. 只有在需要总数时，才加载详细信息 (性能优化)
-		//    对于分类，我们需要 prePopulateFeeds 和 details
+
+		// 2. [FIXED] 只在需要计数时启用 `details`。
+		//    始终保持 `prePopulateFeeds: false` 以节省大量内存，这很可能是500错误的根源。
 		$categories = $categoryDAO->listCategories(
-			prePopulateFeeds: $includeTotalCounts,
+			prePopulateFeeds: false,
 			details: $includeTotalCounts
 		);
 		foreach ($categories as $cat) {
@@ -299,8 +301,9 @@ final class GReaderAPI {
 			];
 
 			// 3. 如果参数存在，则添加 count 和 unread_count 字段
+			//    由于 `details` 已开启，这些方法将是可用的
 			if ($includeTotalCounts) {
-				$categoryItem['count'] = $cat->nbEntries();      // 对于 Category 对象, nbEntries() 是正确的
+				$categoryItem['count'] = $cat->nbEntries();
 				$categoryItem['unread_count'] = $cat->nbNotRead();
 			}
 
@@ -308,7 +311,7 @@ final class GReaderAPI {
 		}
 
 		$tagDAO = FreshRSS_Factory::createTagDao();
-		// precounts: true 对于获取未读数和总数都是必要的
+		// `precounts: true` 对于获取标签的未读数和总数都是必要的
 		$labels = $tagDAO->listTags(precounts: true);
 		foreach ($labels as $label) {
 			$labelItem = [
@@ -319,8 +322,7 @@ final class GReaderAPI {
 
 			// 4. 如果参数存在，则为标签也添加 count 字段
 			if ($includeTotalCounts) {
-				// [FIXED] 标签对象应该使用 `count()` 方法，而不是 `nbEntries()`
-				$labelItem['count'] = $label->count();
+				$labelItem['count'] = $label->count(); // 标签对象使用 `count()` 方法
 			}
 
 			$tags[] = $labelItem;
