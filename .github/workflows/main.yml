@@ -22,7 +22,8 @@ jobs:
         with:
           repository: FreshRSS/FreshRSS
           path: freshrss-source
-
+          ref: edge # 明确指定拉取 FreshRSS 仓库的 'edge' 分支
+          
       - name: Apply patch
         run: |
           echo "Applying custom greader.php..."
