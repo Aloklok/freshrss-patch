@@ -278,29 +278,49 @@ final class GReaderAPI {
 	private static function tagList(): never {
 		header('Content-Type: application/json; charset=UTF-8');
 
+		// 1. 检查是否存在我们自定义的参数，以决定是否要返回总数
+		$includeTotalCounts = isset($_GET['with_counts']);
+
 		$tags = [
 			['id' => 'user/-/state/com.google/starred'],
 			// ['id' => 'user/-/state/com.google/broadcast', 'sortid' => '2']
 		];
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
-		$categories = $categoryDAO->listCategories(prePopulateFeeds: false, details: false);
+		// 2. 只有在需要总数时，才加载详细信息 (性能优化)
+		$categories = $categoryDAO->listCategories(
+			prePopulateFeeds: $includeTotalCounts,
+			details: $includeTotalCounts
+		);
 		foreach ($categories as $cat) {
-			$tags[] = [
+			$categoryItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($cat->name(), ENT_QUOTES),
-				//'sortid' => $cat->name(),
 				'type' => 'folder',	//Inoreader
 			];
+
+			// 3. 如果参数存在，则添加 count 和 unread_count 字段
+			if ($includeTotalCounts) {
+				$categoryItem['count'] = $cat->nbEntries();
+				$categoryItem['unread_count'] = $cat->nbNotRead();
+			}
+
+			$tags[] = $categoryItem;
 		}
 
 		$tagDAO = FreshRSS_Factory::createTagDao();
-		$labels = $tagDAO->listTags(precounts: true);
+		$labels = $tagDAO->listTags(precounts: true); // precounts: true 总是需要，因为它提供了 unread_count
 		foreach ($labels as $label) {
-			$tags[] = [
+			$labelItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($label->name(), ENT_QUOTES),
-				//'sortid' => $label->name(),
 				'type' => 'tag',	//Inoreader
 				'unread_count' => $label->nbUnread(),	//Inoreader
 			];
+
+			// 4. 如果参数存在，则为标签也添加 count 字段
+			if ($includeTotalCounts) {
+				$labelItem['count'] = $label->nbEntries();
+			}
+
+			$tags[] = $labelItem;
 		}
 
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
