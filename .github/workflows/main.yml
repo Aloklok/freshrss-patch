@@ -4,9 +4,10 @@ on:
   workflow_dispatch: # 允许手动触发
   push:              # 监听推送事件
     branches:
-      - main # 监听 main 分支的推送。请根据你的实际默认分支名调整 (如 master)
+      - main # 监听 main 分支的推送。
     paths:
       - 'greader.php'
+      - 'FeedDAO.php' # 当 FeedDAO.php 变化时也触发构建
 
 jobs:
   build:
@@ -15,21 +16,28 @@ jobs:
       - name: Checkout patch repository
         uses: actions/checkout@v3
         with:
-          path: patch
+          path: patch # 检出您自己的仓库到 'patch' 目录
 
       - name: Checkout FreshRSS official repository
         uses: actions/checkout@v3
         with:
           repository: FreshRSS/FreshRSS
-          path: freshrss-source
+          path: freshrss-source # 检出官方仓库到 'freshrss-source' 目录
           ref: edge # 明确指定拉取 FreshRSS 仓库的 'edge' 分支
-          
-      - name: Apply patch
+
+      - name: Apply patches
         run: |
           echo "Applying custom greader.php..."
-          # 根据官方仓库结构，greader.php 位于 'p/api/' 目录下
+          # greader.php 路径保持不变
           cp patch/greader.php freshrss-source/p/api/greader.php
-          echo "Patch applied."
+          echo "greader.php patch applied."
+
+          echo "Applying custom FeedDAO.php..."
+          # --- 核心修正点 ---
+          # [修正] 使用您确认的正确路径 app/Models/
+          cp patch/FeedDAO.php freshrss-source/app/Models/FeedDAO.php
+          # --- 结束修正 ---
+          echo "FeedDAO.php patch applied."
 
       - name: Login to Docker Hub
         uses: docker/login-action@v2
@@ -40,11 +48,7 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
-          # --- 核心修正点 ---
-          # 1. context 依然是官方仓库的根目录
-          context: ./freshrss-source 
-          # 2. file 指向 Docker 子目录中的 Dockerfile-Alpine
+          context: ./freshrss-source
           file: ./freshrss-source/Docker/Dockerfile-Alpine
-          # --- 结束 ---
           push: true
           tags: aloklok/freshrss-custom:latest # 确保这里是你的 Docker Hub 仓库名
