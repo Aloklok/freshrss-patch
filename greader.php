@@ -287,6 +287,7 @@ final class GReaderAPI {
 		];
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
 		// 2. 只有在需要总数时，才加载详细信息 (性能优化)
+		//    对于分类，我们需要 prePopulateFeeds 和 details
 		$categories = $categoryDAO->listCategories(
 			prePopulateFeeds: $includeTotalCounts,
 			details: $includeTotalCounts
@@ -299,7 +300,7 @@ final class GReaderAPI {
 
 			// 3. 如果参数存在，则添加 count 和 unread_count 字段
 			if ($includeTotalCounts) {
-				$categoryItem['count'] = $cat->nbEntries();
+				$categoryItem['count'] = $cat->nbEntries();      // 对于 Category 对象, nbEntries() 是正确的
 				$categoryItem['unread_count'] = $cat->nbNotRead();
 			}
 
@@ -307,7 +308,8 @@ final class GReaderAPI {
 		}
 
 		$tagDAO = FreshRSS_Factory::createTagDao();
-		$labels = $tagDAO->listTags(precounts: true); // precounts: true 总是需要，因为它提供了 unread_count
+		// precounts: true 对于获取未读数和总数都是必要的
+		$labels = $tagDAO->listTags(precounts: true);
 		foreach ($labels as $label) {
 			$labelItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($label->name(), ENT_QUOTES),
@@ -317,7 +319,8 @@ final class GReaderAPI {
 
 			// 4. 如果参数存在，则为标签也添加 count 字段
 			if ($includeTotalCounts) {
-				$labelItem['count'] = $label->nbEntries();
+				// [FIXED] 标签对象应该使用 `count()` 方法，而不是 `nbEntries()`
+				$labelItem['count'] = $label->count();
 			}
 
 			$tags[] = $labelItem;
@@ -326,6 +329,8 @@ final class GReaderAPI {
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
 		exit();
 	}
+
+	
 
 	private static function subscriptionExport(): never {
 		$user = Minz_User::name() ?? Minz_User::INTERNAL_USER;
