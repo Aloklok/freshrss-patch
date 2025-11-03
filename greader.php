@@ -278,18 +278,14 @@ final class GReaderAPI {
 	private static function tagList(): never {
 		header('Content-Type: application/json; charset=UTF-8');
 
-		// 1. 检查是否存在我们自定义的参数，以决定是否要返回总数
 		$includeTotalCounts = isset($_GET['with_counts']);
 
 		$tags = [
 			['id' => 'user/-/state/com.google/starred'],
-			// ['id' => 'user/-/state/com.google/broadcast', 'sortid' => '2']
 		];
 
+		// --- START CATEGORY BLOCK ---
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
-
-		// 2. [FIXED] 只在需要计数时启用 `details`。
-		//    始终保持 `prePopulateFeeds: false` 以节省大量内存，这很可能是500错误的根源。
 		$categories = $categoryDAO->listCategories(
 			prePopulateFeeds: false,
 			details: $includeTotalCounts
@@ -297,11 +293,9 @@ final class GReaderAPI {
 		foreach ($categories as $cat) {
 			$categoryItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($cat->name(), ENT_QUOTES),
-				'type' => 'folder',	//Inoreader
+				'type' => 'folder',
 			];
 
-			// 3. 如果参数存在，则添加 count 和 unread_count 字段
-			//    由于 `details` 已开启，这些方法将是可用的
 			if ($includeTotalCounts) {
 				$categoryItem['count'] = $cat->nbEntries();
 				$categoryItem['unread_count'] = $cat->nbNotRead();
@@ -309,29 +303,30 @@ final class GReaderAPI {
 
 			$tags[] = $categoryItem;
 		}
+		// --- END CATEGORY BLOCK ---
 
+
+		/* --- TAG BLOCK TEMPORARILY DISABLED FOR TESTING ---
 		$tagDAO = FreshRSS_Factory::createTagDao();
-		// `precounts: true` 对于获取标签的未读数和总数都是必要的
 		$labels = $tagDAO->listTags(precounts: true);
 		foreach ($labels as $label) {
 			$labelItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($label->name(), ENT_QUOTES),
-				'type' => 'tag',	//Inoreader
-				'unread_count' => $label->nbUnread(),	//Inoreader
+				'type' => 'tag',
+				'unread_count' => $label->nbUnread(),
 			];
 
-			// 4. 如果参数存在，则为标签也添加 count 字段
 			if ($includeTotalCounts) {
-				$labelItem['count'] = $label->count(); // 标签对象使用 `count()` 方法
+				$labelItem['count'] = $label->count();
 			}
 
 			$tags[] = $labelItem;
 		}
+		*/
 
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
 		exit();
 	}
-
 	
 
 	private static function subscriptionExport(): never {
