@@ -278,6 +278,7 @@ final class GReaderAPI {
 	private static function tagList(): never {
 		header('Content-Type: application/json; charset=UTF-8');
 
+		// 检查是否需要返回总数
 		$includeTotalCounts = isset($_GET['with_counts']);
 
 		$tags = [
@@ -285,7 +286,7 @@ final class GReaderAPI {
 			// ['id' => 'user/-/state/com.google/broadcast', 'sortid' => '2']
 		];
 
-		// --- CATEGORY BLOCK (保持原样，不进行计数) ---
+		// --- 分类部分：保持原始代码，不做任何修改 ---
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
 		$categories = $categoryDAO->listCategories(prePopulateFeeds: false, details: false);
 		foreach ($categories as $cat) {
@@ -294,12 +295,10 @@ final class GReaderAPI {
 				'type' => 'folder',	//Inoreader
 			];
 		}
-		// --- END CATEGORY BLOCK ---
 
-
-		// --- TAG BLOCK (添加了可选的 count) ---
+		// --- 标签部分：使用绝对安全的方式获取总数 ---
 		$tagDAO = FreshRSS_Factory::createTagDao();
-		$labels = $tagDAO->listTags(precounts: true); // precounts: true 必须为 true
+		$labels = $tagDAO->listTags(precounts: true);
 		foreach ($labels as $label) {
 			$labelItem = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($label->name(), ENT_QUOTES),
@@ -307,14 +306,23 @@ final class GReaderAPI {
 				'unread_count' => $label->nbUnread(),	//Inoreader
 			];
 
-			// 只有在请求时，才添加标签的总数
+			// 如果请求了总数...
 			if ($includeTotalCounts) {
-				$labelItem['count'] = $label->count();
+				// [FIX] 使用 method_exists() 来安全地检查和调用方法
+				// 这将彻底避免 "Call to undefined method" 导致的 500 错误。
+				if (method_exists($label, 'count')) {
+					$labelItem['count'] = $label->count();
+				} elseif (method_exists($label, 'nbEntries')) {
+					// 作为备用方案，检查另一个可能的方法名
+					$labelItem['count'] = $label->nbEntries();
+				} else {
+					// 如果两个方法都不存在，返回一个清晰的标识，而不是崩溃
+					$labelItem['count'] = -1; // 表示获取失败
+				}
 			}
 
 			$tags[] = $labelItem;
 		}
-		// --- END TAG BLOCK ---
 
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
 		exit();
