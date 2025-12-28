@@ -4,10 +4,10 @@ on:
   workflow_dispatch: # 允许手动触发
   push:              # 监听推送事件
     branches:
-      - main # 监听 main 分支的推送。
+      - main # 监听 main 分支的推送
     paths:
       - 'greader.php'
-      - 'FeedDAO.php' # 当 FeedDAO.php 变化时也触发构建
+      - 'FeedDAO.php' # 当补丁文件变化时触发构建
 
 jobs:
   build:
@@ -16,28 +16,33 @@ jobs:
       - name: Checkout patch repository
         uses: actions/checkout@v3
         with:
-          path: patch # 检出您自己的仓库到 'patch' 目录
+          path: patch # 检出您自己的补丁仓库
 
       - name: Checkout FreshRSS official repository
         uses: actions/checkout@v3
         with:
           repository: FreshRSS/FreshRSS
-          path: freshrss-source # 检出官方仓库到 'freshrss-source' 目录
-          ref: edge # 明确指定拉取 FreshRSS 仓库的 'edge' 分支
+          path: freshrss-source
+          ref: edge # 拉取最新的开发分支
+
+      - name: Get Short SHA and Timestamp
+        id: vars
+        run: |
+          # 获取 7 位短哈希
+          echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          # 获取时间戳 (格式: 20231228-1020)
+          echo "timestamp=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
       - name: Apply patches
         run: |
           echo "Applying custom greader.php..."
-          # greader.php 路径保持不变
           cp patch/greader.php freshrss-source/p/api/greader.php
-          echo "greader.php patch applied."
-
+          
           echo "Applying custom FeedDAO.php..."
-          # --- 核心修正点 ---
-          # [修正] 使用您确认的正确路径 app/Models/
+          # 使用您确认的 1.28.0 正确路径
           cp patch/FeedDAO.php freshrss-source/app/Models/FeedDAO.php
-          # --- 结束修正 ---
-          echo "FeedDAO.php patch applied."
+          
+          echo "Patches applied successfully."
 
       - name: Login to Docker Hub
         uses: docker/login-action@v2
@@ -51,4 +56,11 @@ jobs:
           context: ./freshrss-source
           file: ./freshrss-source/Docker/Dockerfile-Alpine
           push: true
-          tags: aloklok/freshrss-custom:latest # 确保这里是你的 Docker Hub 仓库名
+          # 同时打上三个标签：
+          # 1. latest (始终指向最新)
+          # 2. sha-xxxx (对应你的代码版本)
+          # 3. 时间戳 (方便肉眼识别构建时间)
+          tags: |
+            aloklok/freshrss-custom:latest
+            aloklok/freshrss-custom:${{ steps.vars.outputs.sha_short }}
+            aloklok/freshrss-custom:build-${{ steps.vars.outputs.timestamp }}
