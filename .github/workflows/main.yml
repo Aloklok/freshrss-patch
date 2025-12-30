@@ -4,10 +4,10 @@ on:
   workflow_dispatch: # 允许手动触发
   push:              # 监听推送事件
     branches:
-      - main # 监听 main 分支的推送
+      - main 
     paths:
       - 'greader.php'
-      - 'FeedDAO.php' # 当补丁文件变化时触发构建
+      - 'FeedDAO.php' 
 
 jobs:
   build:
@@ -27,19 +27,20 @@ jobs:
 
       - name: Get Short SHA and Timestamp
         id: vars
+        # 核心修复：明确在 patch 目录下执行 git 命令，并处理变量输出
         run: |
-          # 获取 7 位短哈希
+          cd patch
           echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          # 获取时间戳 (格式: 20231228-1020)
           echo "timestamp=$(date +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
 
       - name: Apply patches
         run: |
           echo "Applying custom greader.php..."
+          # 确保目标目录存在（虽然 edge 分支通常已有该路径）
           cp patch/greader.php freshrss-source/p/api/greader.php
           
           echo "Applying custom FeedDAO.php..."
-          # 使用您确认的 1.28.0 正确路径
+          # 覆盖 1.21+ / 1.28.0 版本的核心 DAO 文件
           cp patch/FeedDAO.php freshrss-source/app/Models/FeedDAO.php
           
           echo "Patches applied successfully."
@@ -56,10 +57,7 @@ jobs:
           context: ./freshrss-source
           file: ./freshrss-source/Docker/Dockerfile-Alpine
           push: true
-          # 同时打上三个标签：
-          # 1. latest (始终指向最新)
-          # 2. sha-xxxx (对应你的代码版本)
-          # 3. 时间戳 (方便肉眼识别构建时间)
+          # 修复点：确保引用时变量不为空
           tags: |
             aloklok/freshrss-custom:latest
             aloklok/freshrss-custom:${{ steps.vars.outputs.sha_short }}
