@@ -5,6 +5,7 @@ declare(strict_types=1);
 == Description ==
 Server-side API compatible with Google Reader API layer 2
 	for the FreshRSS project https://freshrss.org
+FreshRSS-specific information is prefixed with 'frss:'
 
 == Credits ==
 * 2014-03: Released by Alexandre Alapetite https://alexandre.alapetite.fr
@@ -49,7 +50,7 @@ if (PHP_INT_SIZE < 8) {	//32-bit
 	}
 }
 
-const JSON_OPTIONS = JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
+const JSON_OPTIONS = JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE;
 
 function headerVariable(string $headerName, string $varName): string {
 	$header = '';
@@ -278,18 +279,20 @@ final class GReaderAPI {
 	private static function tagList(): never {
 		header('Content-Type: application/json; charset=UTF-8');
 
-		$includeTotalCounts = isset($_GET['with_counts']);
-
 		$tags = [
 			['id' => 'user/-/state/com.google/starred'],
 			// ['id' => 'user/-/state/com.google/broadcast', 'sortid' => '2']
+			['id' => 'user/-/state/com.google/reading-list'],
+			['id' => 'user/-/state/org.freshrss/main'],
+			['id' => 'user/-/state/org.freshrss/important'],
+			// ['id' => 'user/-/state/org.freshrss/hidden'],
 		];
-
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
 		$categories = $categoryDAO->listCategories(prePopulateFeeds: false, details: false);
 		foreach ($categories as $cat) {
 			$tags[] = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($cat->name(), ENT_QUOTES),
+				//'sortid' => $cat->name(),
 				'type' => 'folder',	//Inoreader
 			];
 		}
@@ -297,23 +300,12 @@ final class GReaderAPI {
 		$tagDAO = FreshRSS_Factory::createTagDao();
 		$labels = $tagDAO->listTags(precounts: true);
 		foreach ($labels as $label) {
-			$labelItem = [
+			$tags[] = [
 				'id' => 'user/-/label/' . htmlspecialchars_decode($label->name(), ENT_QUOTES),
+				//'sortid' => $label->name(),
 				'type' => 'tag',	//Inoreader
 				'unread_count' => $label->nbUnread(),	//Inoreader
 			];
-
-			if ($includeTotalCounts) {
-				if (method_exists($label, 'count')) {
-					$labelItem['count'] = $label->count();
-				} elseif (method_exists($label, 'nbEntries')) {
-					$labelItem['count'] = $label->nbEntries();
-				} else {
-					$labelItem['count'] = -1;
-				}
-			}
-
-			$tags[] = $labelItem;
 		}
 
 		echo json_encode(['tags' => $tags], JSON_OPTIONS), "\n";
@@ -353,6 +345,9 @@ final class GReaderAPI {
 		$categoryDAO = FreshRSS_Factory::createCategoryDao();
 		foreach ($categoryDAO->listCategories(prePopulateFeeds: true, details: true) as $cat) {
 			foreach ($cat->feeds() as $feed) {
+				if ($feed->priority() <= FreshRSS_Feed::PRIORITY_HIDDEN) {
+					continue;
+				}
 				$subscriptions[] = [
 					'id' => 'feed/' . $feed->id(),
 					'title' => escapeToUnicodeAlternative($feed->name(), true),
@@ -369,6 +364,14 @@ final class GReaderAPI {
 					'iconUrl' => str_replace(
 						'/api/greader.php/reader/api/0/subscription', '',	// Security if base_url is not set properly
 						$feed->favicon(absolute: true)),
+					'frss:priority' => match ($feed->priority()) {
+						FreshRSS_Feed::PRIORITY_IMPORTANT => FreshRSS_Export_Service::PRIORITY_IMPORTANT,
+						FreshRSS_Feed::PRIORITY_MAIN_STREAM => FreshRSS_Export_Service::PRIORITY_MAIN_STREAM,
+						FreshRSS_Feed::PRIORITY_CATEGORY => FreshRSS_Export_Service::PRIORITY_CATEGORY,
+						FreshRSS_Feed::PRIORITY_FEED => FreshRSS_Export_Service::PRIORITY_FEED,
+						// FreshRSS_Feed::PRIORITY_HIDDEN => FreshRSS_Export_Service::PRIORITY_HIDDEN,	// Not returned by the API
+						default => FreshRSS_Export_Service::PRIORITY_MAIN_STREAM,
+					},
 				];
 			}
 		}
@@ -411,7 +414,7 @@ final class GReaderAPI {
 				}
 			}
 			$c_name = htmlspecialchars($c_name, ENT_COMPAT, 'UTF-8');
-			if (in_array($c_name, ['', 'Uncategorized', _t('gen.short.default_category')], true)) {
+			if (in_array($c_name, ['', FreshRSS_CategoryDAO::DEFAULT_CATEGORY_NAME, _t('gen.short.default_category')], true)) {
 				$addCatId = FreshRSS_CategoryDAO::DEFAULTCATEGORYID;
 			} else {
 				$categoryDAO = FreshRSS_Factory::createCategoryDao();
@@ -515,6 +518,9 @@ final class GReaderAPI {
 		foreach ($categoryDAO->listCategories(prePopulateFeeds: true, details: true) as $cat) {
 			$catLastUpdate = 0;
 			foreach ($cat->feeds() as $feed) {
+				if ($feed->priority() <= FreshRSS_Feed::PRIORITY_HIDDEN) {
+					continue;
+				}
 				$lastUpdate = $feedsNewestItemUsec['f_' . $feed->id()] ?? 0;
 				$unreadcounts[] = [
 					'id' => 'feed/' . $feed->id(),
@@ -560,65 +566,61 @@ final class GReaderAPI {
 		exit();
 	}
 
-	// === START FINAL VERSION: entriesToArray (with backward compatibility) ===
 	/**
-	 * @param list<FreshRSS_Entry> $entries
-	 * @return list<array<string,mixed>>
+	 * @param iterable<FreshRSS_Entry> $entries
+	 * @param list<numeric-string>|null $e_ids List of entry IDs if known, for performance
+	 * @return Generator<int,array<string,mixed>>
 	 */
-	private static function entriesToArray(array $entries, bool $excludeContent = false): array {
-		if (empty($entries)) {
-			return [];
-		}
+	private static function entriesToArray(iterable $entries, ?array $e_ids = null, bool $excludeContent = false): Generator {
+		// 将 iterable 转换为数组，因为我们需要遍历两次（一次提取ID，一次生成结果）
+		// 这里的内存消耗是不可避免的，因为 getEntryIdsTagNames 也需要数组
+		$entries = array_values(is_array($entries) ? $entries : iterator_to_array($entries));
 
+		$tagDAO = FreshRSS_Factory::createTagDao();
+		$entryIdsTagNames = $tagDAO->getEntryIdsTagNames($entries);
+
+		// === START: 智能 Feed 获取逻辑 ===
 		$feedDAO = FreshRSS_Factory::createFeedDao();
-		$feed = null;
+		$feedsMap = null;
+		$categories = null;
 
-		// --- 智能优化逻辑开始 ---
-		// 检查 FeedDAO 是否具备我们新增的高效方法
+		// 检查 FeedDAO 是否支持高效的批量查询方法
 		if (method_exists($feedDAO, 'listFeedsByIds')) {
-			// 路径 A：优化路径 (如果 FeedDAO.php 已更新)
-
 			// 1. 收集当前批次文章所需的所有 feed IDs
 			$neededFeedIds = [];
 			foreach ($entries as $entry) {
 				$neededFeedIds[$entry->feedId()] = true;
 			}
-			$neededFeedIds = array_keys($neededFeedIds);
-
-			// 2. 调用新方法，一次性、精确地获取这些 feeds 的信息
-			$feeds = $feedDAO->listFeedsByIds($neededFeedIds);
-
-			// 3. 创建一个高效的查找表 (map)
-			$feedsMap = [];
-			foreach ($feeds as $feedObject) {
-				$feedsMap[$feedObject->id()] = $feedObject;
+			
+			if (!empty($neededFeedIds)) {
+				// 2. 调用新方法，一次性精确获取这些 feeds
+				$feeds = $feedDAO->listFeedsByIds(array_keys($neededFeedIds));
+				// 3. 创建查找表
+				foreach ($feeds as $feedObject) {
+					$feedsMap[$feedObject->id()] = $feedObject;
+				}
 			}
-		} else {
-			// 路径 B：原始路径 (兼容旧版 FeedDAO.php)
-			// 如果新方法不存在，则回退到加载所有分类和订阅的旧逻辑
+		} 
+		
+		// 如果上面没走通（方法不存在或没查到），回退到加载所有分类的旧模式
+		if ($feedsMap === null) {
 			$catDAO = FreshRSS_Factory::createCategoryDao();
 			$categories = $catDAO->listCategories(prePopulateFeeds: true);
 		}
-		// --- 智能优化逻辑结束 ---
+		// === END: 智能 Feed 获取逻辑 ===
 
-
-		$tagDAO = FreshRSS_Factory::createTagDao();
-		$entryIdsTagNames = $tagDAO->getEntryIdsTagNames($entries);
-
-		$items = [];
 		foreach ($entries as $item) {
 			/** @var FreshRSS_Entry|null $entry */
-			$entry = Minz_ExtensionManager::callHook('entry_before_display', $item);
+			$entry = Minz_ExtensionManager::callHook(Minz_HookType::EntryBeforeDisplay, $item);
 			if ($entry === null) {
 				continue;
 			}
 
-			// 根据上面执行的路径，选择不同的方式来获取 feed 对象
-			if (isset($feedsMap)) {
-				// 优化路径：直接从 map 中获取
+			// 根据上面的逻辑，选择从 Map 获取还是从 Categories 查找
+			$feed = null;
+			if ($feedsMap !== null) {
 				$feed = $feedsMap[$entry->feedId()] ?? null;
-			} elseif (isset($categories)) {
-				// 原始路径：从所有分类中查找
+			} elseif ($categories !== null) {
 				$feed = FreshRSS_Category::findFeed($categories, $entry->feedId());
 			}
 
@@ -627,31 +629,26 @@ final class GReaderAPI {
 			}
 			$entry->_feed($feed);
 
-			// (后续所有代码保持不变)
-			$customTags = $entryIdsTagNames['e_' . $entry->id()] ?? [];
-			$gReaderItem = $entry->toGReader('compat', $customTags);
-			$gReaderItem['tags'] = $customTags;
-			$annotations = [];
-			if ($entry->isRead()) {
-				$annotations[] = ['id' => 'user/-/state/com.google/read'];
-			}
-			if ($entry->isFavorite()) {
-				$annotations[] = ['id' => 'user/-/state/com.google/starred'];
-			}
-			$gReaderItem['annotations'] = array_merge($gReaderItem['annotations'] ?? [], $annotations);
+			$tags = $entryIdsTagNames['e_' . $entry->id()] ?? [];
+			$gReaderItem = $entry->toGReader('compat', $tags);
+			
+			// [Modified] User requested explicit tags key
+			$gReaderItem['tags'] = $tags;
+
+			// [Modified] User requested excludeContent logic
 			if ($excludeContent) {
 				unset($gReaderItem['content']);
 				unset($gReaderItem['summary']);
 			}
-			$items[] = $gReaderItem;
-		}
-		return $items;
-	}
-	// === END FINAL VERSION: entriesToArray ===
 
-	/**
-	 * @param 'A'|'c'|'f'|'s' $type
-	 * @return array{'A'|'c'|'f'|'s'|'t',int,int,FreshRSS_BooleanSearch}
+			yield $gReaderItem;
+		}
+	}
+
+	
+/**
+	 * @param 'A'|'a'|'c'|'f'|'i'|'s' $type
+	 * @return array{'A'|'a'|'c'|'f'|'i'|'s'|'t',int,int,FreshRSS_BooleanSearch}
 	 */
 	private static function streamContentsFilters(string $type, int|string $streamId,
 		string $filter_target, string $exclude_target, int $start_time, int $stop_time): array {
@@ -722,7 +719,7 @@ final class GReaderAPI {
 	 * @param numeric-string $continuation
 	 */
 	private static function streamContents(string $path, string $include_target, int $start_time, int $stop_time, int $count,
-		string $order, string $filter_target, string $exclude_target, string $continuation,bool $excludeContent = false): never {
+		string $order, string $filter_target, string $exclude_target, string $continuation, bool $excludeContent = false): never {
 		// https://code.google.com/archive/p/pyrfeed/wikis/GoogleReaderAPI.wiki
 		// https://web.archive.org/web/20210126115837/https://blog.martindoms.com/2009/10/16/using-the-google-reader-api-part-2#feed
 		header('Content-Type: application/json; charset=UTF-8');
@@ -731,7 +728,9 @@ final class GReaderAPI {
 			'starred' => 's',
 			'feed' => 'f',
 			'label' => 'c',
-			'reading-list' => 'A',
+			'reading-list' => 'A',	// All except PRIORITY_HIDDEN
+			'main' => 'a',
+			'important' => 'i',
 			default => 'A',
 		};
 
@@ -743,38 +742,59 @@ final class GReaderAPI {
 		}
 
 		$entryDAO = FreshRSS_Factory::createEntryDao();
-		$entryIterator = $entryDAO->listWhere($type, $include_target, $state, $searches,
+		$entries = $entryDAO->listWhere($type, $include_target, $state, $searches,
 			order: $order === 'o' ? 'ASC' : 'DESC',
 			continuation_id: $continuation,
 			limit: $count);
 
-		// 优化点：直接遍历迭代器，避免 iterator_to_array 造成内存峰值
-		$entries = [];
-		foreach ($entryIterator as $entry) {
-			$entries[] = $entry;
-		}
-
-		$items = self::entriesToArray($entries, $excludeContent);
+		// [Modified] Pass excludeContent
+		$items = self::entriesToArray($entries, null, $excludeContent);
 
 		if ($continuation !== '0') {
-			array_shift($items);	//Discard first element that was already sent in the previous response
+			//Discard first element that was already sent in the previous response
+			$items = new LimitIterator($items, offset: 1);
 			$count--;
 		}
 
-		$response = [
-			'id' => 'user/-/state/com.google/reading-list',
-			'updated' => time(),
-			'items' => $items,
-		];
-		if (count($entries) >= $count) {
-			$entry = end($entries);
-			if ($entry != false) {
-				$response['continuation'] = '' . $entry->id();
+		$time = time();
+		$nbItems = 0;
+		$lastEntryId = 0;
+
+		// Note: This section must be streamed to avoid memory issues with large responses
+		echo <<<TXT
+{
+	"id": "user/-/state/com.google/reading-list",
+	"updated": $time,
+	"items": [
+
+TXT;
+		foreach ($items as $item) {
+			if (!is_array($item) || empty($item)) {
+				continue;
 			}
+			if ($nbItems > 0) {
+				echo ",\n";
+			}
+			$lastEntryId = is_numeric($item['frss:id'] ?? null) ? (int)$item['frss:id'] : 0;
+			unset($item['frss:id']);
+			echo json_encode($item, JSON_OPTIONS);
+			$nbItems++;
 		}
-		unset($entries, $entryDAO, $items);
-		gc_collect_cycles();
-		echoJson($response, 2);	// $optimisationDepth=2 as we are interested in being memory efficient for {"items":[...]}
+		echo <<<'TXT'
+
+	]
+TXT;
+		if ($nbItems >= $count && $lastEntryId > 0) {
+			echo <<<TXT
+,
+	"continuation": "$lastEntryId"
+TXT;
+		}
+		echo <<<'TXT'
+
+}
+
+TXT;
 		exit();
 	}
 
@@ -792,6 +812,12 @@ final class GReaderAPI {
 			$streamId = '';
 		} elseif ($streamId === 'user/-/state/com.google/starred') {
 			$type = 's';
+			$streamId = '';
+		} elseif ($streamId === 'user/-/state/org.freshrss/main') {
+			$type = 'a';
+			$streamId = '';
+		} elseif ($streamId === 'user/-/state/org.freshrss/important') {
+			$type = 'i';
 			$streamId = '';
 		} elseif ($streamId === 'user/-/state/com.google/read') {
 			$filter_target = $streamId;
@@ -856,8 +882,7 @@ final class GReaderAPI {
 	/**
 	 * @param list<string> $e_ids
 	 */
-	private static function streamContentsItems(array $e_ids, string $order,bool $excludeContent = false): never {
-
+	private static function streamContentsItems(array $e_ids, string $order, bool $excludeContent = false): never {
 		header('Content-Type: application/json; charset=UTF-8');
 
 		foreach ($e_ids as $i => $e_id) {
@@ -869,24 +894,38 @@ final class GReaderAPI {
 		/** @var list<numeric-string> $e_ids */
 
 		$entryDAO = FreshRSS_Factory::createEntryDao();
-		$entryIterator = $entryDAO->listByIds($e_ids, order: $order === 'o' ? 'ASC' : 'DESC');
+		$entries = $entryDAO->listByIds($e_ids, order: $order === 'o' ? 'ASC' : 'DESC');
 
-		// 优化点：直接遍历迭代器，避免 iterator_to_array 造成内存峰值
-		$entries = [];
-		foreach ($entryIterator as $entry) {
-			$entries[] = $entry;
+		// [Modified] Pass excludeContent
+		$items = self::entriesToArray($entries, $e_ids, $excludeContent);
+		$time = time();
+		$nbItems = 0;
+
+		// Note: This section must be streamed to avoid memory issues with large responses
+		echo <<<TXT
+{
+	"id": "user/-/state/com.google/reading-list",
+	"updated": $time,
+	"items": [
+
+TXT;
+		foreach ($items as $item) {
+			if (!is_array($item) || empty($item)) {
+				continue;
+			}
+			if ($nbItems > 0) {
+				echo ",\n";
+			}
+			unset($item['frss:id']);
+			echo json_encode($item, JSON_OPTIONS);
+			$nbItems++;
 		}
+		echo <<<'TXT'
 
-		$items = self::entriesToArray($entries, $excludeContent);
+	]
+}
 
-		$response = [
-			'id' => 'user/-/state/com.google/reading-list',
-			'updated' => time(),
-			'items' => $items,
-		];
-		unset($entries, $entryDAO, $items);
-		gc_collect_cycles();
-		echoJson($response, 2);	// $optimisationDepth=2 as we are interested in being memory efficient for {"items":[...]}
+TXT;
 		exit();
 	}
 
@@ -1013,7 +1052,7 @@ final class GReaderAPI {
 			if ($cat != null) {
 				$feedDAO = FreshRSS_Factory::createFeedDao();
 				$feedDAO->changeCategory($cat->id(), 0);
-				if ($cat->id() > 1) {
+				if ($cat->id() > FreshRSS_CategoryDAO::DEFAULTCATEGORYID) {
 					$categoryDAO->deleteCategory($cat->id());
 				}
 				exit('OK');
@@ -1058,13 +1097,17 @@ final class GReaderAPI {
 				}
 			}
 		} elseif ($streamId === 'user/-/state/com.google/reading-list') {
-			$entryDAO->markReadEntries($olderThanId, onlyFavorites: false);
+			$entryDAO->markReadEntries($olderThanId, priorityMin: FreshRSS_Feed::PRIORITY_HIDDEN + 1);
 		} elseif ($streamId === 'user/-/state/com.google/starred') {
-			$entryDAO->markReadEntries($olderThanId, onlyFavorites: true);
+			$entryDAO->markReadEntries($olderThanId, onlyFavorites: true, priorityMin: FreshRSS_Feed::PRIORITY_HIDDEN + 1);
+		} elseif ($streamId === 'user/-/state/org.freshrss/main') {
+			$entryDAO->markReadEntries($olderThanId, priorityMin: FreshRSS_Feed::PRIORITY_MAIN_STREAM);
+		} elseif ($streamId === 'user/-/state/org.freshrss/important') {
+			$entryDAO->markReadEntries($olderThanId, priorityMin: FreshRSS_Feed::PRIORITY_IMPORTANT);
 		} elseif ($streamId === 'user/-/state/com.google/read') {
 			$entryDAO->markReadEntries($olderThanId, state: FreshRSS_Entry::STATE_READ);
 		} elseif ($streamId === 'user/-/state/com.google/unread') {
-			$entryDAO->markReadEntries($olderThanId, state: FreshRSS_Entry::STATE_NOT_READ);
+			$entryDAO->markReadEntries($olderThanId, state: FreshRSS_Entry::STATE_NOT_READ, priorityMin: FreshRSS_Feed::PRIORITY_HIDDEN + 1);
 		} else {
 			self::badRequest();
 		}
@@ -1166,7 +1209,9 @@ final class GReaderAPI {
 					if (!ctype_digit($continuation)) {
 						$continuation = '0';
 					}
+					// [Modified] Capture excludeContent parameter
 					$excludeContent = isset($_GET['excludeContent']);
+
 					if (isset($pathInfos[5]) && $pathInfos[5] === 'contents') {
 						if (!isset($pathInfos[6]) && is_string($_GET['s'] ?? null)) {
 							// Compatibility BazQux API https://github.com/bazqux/bazqux-api#fetching-streams
@@ -1186,13 +1231,15 @@ final class GReaderAPI {
 										$include_target = '';
 									}
 								}
+								// [Modified] Pass excludeContent
 								self::streamContents($pathInfos[6], $include_target, $start_time, $stop_time,
 									$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent);
 							} elseif (isset($pathInfos[8], $pathInfos[9]) && $pathInfos[6] === 'user') {
 								if ($pathInfos[8] === 'state') {
-									if ($pathInfos[9] === 'com.google' && isset($pathInfos[10])) {
-										if ($pathInfos[10] === 'reading-list' || $pathInfos[10] === 'starred') {
+									if (in_array($pathInfos[9], ['com.google', 'org.freshrss'], true) && isset($pathInfos[10])) {
+										if (in_array($pathInfos[10], ['reading-list', 'starred', 'main', 'important'], true)) {
 											$include_target = '';
+											// [Modified] Pass excludeContent
 											self::streamContents($pathInfos[10], $include_target, $start_time, $stop_time, $count, $order,
 												$filter_target, $exclude_target, $continuation, $excludeContent);
 										}
@@ -1204,12 +1251,14 @@ final class GReaderAPI {
 									} else {
 										$include_target = $pathInfos[9];
 									}
+									// [Modified] Pass excludeContent
 									self::streamContents($pathInfos[8], $include_target, $start_time, $stop_time,
 										$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent);
 								}
 							}
 						} else {	//EasyRSS, FeedMe
 							$include_target = '';
+							// [Modified] Pass excludeContent
 							self::streamContents('reading-list', $include_target, $start_time, $stop_time,
 								$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent);
 						}
@@ -1221,6 +1270,7 @@ final class GReaderAPI {
 							self::streamContentsItemsIds($streamId, $start_time, $stop_time, $count, $order, $filter_target, $exclude_target, $continuation);
 						} elseif ($pathInfos[6] === 'contents' && isset($_POST['i'])) {	//FeedMe
 							$e_ids = self::multiplePosts('i');	//item IDs
+							// [Modified] Pass excludeContent
 							self::streamContentsItems($e_ids, $order, $excludeContent);
 						}
 					}
