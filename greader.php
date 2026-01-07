@@ -717,11 +717,15 @@ final class GReaderAPI {
 			/** @var string $range */
 			$range = '';
 			if ($pub_start_time !== 0 && $pub_stop_time !== 0) {
-				$range = $pub_start_time . '/' . $pub_stop_time;
+				// Use Y-m-d\TH:i:s format which parseDateInterval handles well.
+				// The slash (/) denotes a range [start, stop].
+				$range = gmdate('Y-m-d\TH:i:s', $pub_start_time) . '/' . gmdate('Y-m-d\TH:i:s', $pub_stop_time);
 			} elseif ($pub_start_time !== 0) {
-				$range = '>=' . $pub_start_time;
+				// From start to infinity.
+				$range = gmdate('Y-m-d\TH:i:s', $pub_start_time) . '/';
 			} elseif ($pub_stop_time !== 0) {
-				$range = '<=' . $pub_stop_time;
+				// From beginning of time to stop.
+				$range = '/' . gmdate('Y-m-d\TH:i:s', $pub_stop_time);
 			}
 			$pub_search = new FreshRSS_Search('pubdate:' . $range);
 			$searches->add($pub_search);
