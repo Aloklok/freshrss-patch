@@ -714,13 +714,14 @@ final class GReaderAPI {
 		}
 
 		if ($pub_start_time !== 0 || $pub_stop_time !== 0) {
-			$pub_search = new FreshRSS_Search('');
+			$pub_query = '';
 			if ($pub_start_time !== 0) {
-				$pub_search->setMinPubdate($pub_start_time);
+				$pub_query .= 'pubdate:>=' . $pub_start_time . ' ';
 			}
 			if ($pub_stop_time !== 0) {
-				$pub_search->setMaxPubdate($pub_stop_time);
+				$pub_query .= 'pubdate:<=' . $pub_stop_time . ' ';
 			}
+			$pub_search = new FreshRSS_Search(trim($pub_query));
 			$searches->add($pub_search);
 		}
 
