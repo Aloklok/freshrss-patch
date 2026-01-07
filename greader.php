@@ -701,14 +701,14 @@ final class GReaderAPI {
 		}
 
 		$searches = new FreshRSS_BooleanSearch('');
+		$search = new FreshRSS_Search('');
 		if ($start_time !== 0) {
-			$search = new FreshRSS_Search('');
 			$search->setMinDate($start_time);
-			$searches->add($search);
 		}
 		if ($stop_time !== 0) {
-			$search = new FreshRSS_Search('');
 			$search->setMaxDate($stop_time);
+		}
+		if ($start_time !== 0 || $stop_time !== 0) {
 			$searches->add($search);
 		}
 
