@@ -716,10 +716,10 @@ final class GReaderAPI {
 		if ($pub_start_time !== 0 || $pub_stop_time !== 0) {
 			$pub_search = new FreshRSS_Search('');
 			if ($pub_start_time !== 0) {
-				$pub_search->setMinDate($pub_start_time);
+				$pub_search->setMinPubdate($pub_start_time);
 			}
 			if ($pub_stop_time !== 0) {
-				$pub_search->setMaxDate($pub_stop_time);
+				$pub_search->setMaxPubdate($pub_stop_time);
 			}
 			$searches->add($pub_search);
 		}
