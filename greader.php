@@ -651,7 +651,8 @@ final class GReaderAPI {
 	 * @return array{'A'|'a'|'c'|'f'|'i'|'s'|'t',int,int,FreshRSS_BooleanSearch}
 	 */
 	private static function streamContentsFilters(string $type, int|string $streamId,
-		string $filter_target, string $exclude_target, int $start_time, int $stop_time): array {
+		string $filter_target, string $exclude_target, int $start_time, int $stop_time, 
+		int $pub_start_time = 0, int $pub_stop_time = 0): array {
 		switch ($type) {
 			case 'f':	//feed
 				if ($streamId != '' && is_string($streamId) && !is_numeric($streamId)) {
@@ -712,6 +713,17 @@ final class GReaderAPI {
 			$searches->add($search);
 		}
 
+		if ($pub_start_time !== 0 || $pub_stop_time !== 0) {
+			$pub_search = new FreshRSS_Search('');
+			if ($pub_start_time !== 0) {
+				$pub_search->setMinDate($pub_start_time);
+			}
+			if ($pub_stop_time !== 0) {
+				$pub_search->setMaxDate($pub_stop_time);
+			}
+			$searches->add($pub_search);
+		}
+
 		return [$type, $streamId, $state, $searches];
 	}
 
@@ -719,7 +731,8 @@ final class GReaderAPI {
 	 * @param numeric-string $continuation
 	 */
 	private static function streamContents(string $path, string $include_target, int $start_time, int $stop_time, int $count,
-		string $order, string $filter_target, string $exclude_target, string $continuation, bool $excludeContent = false): never {
+		string $order, string $filter_target, string $exclude_target, string $continuation, bool $excludeContent = false,
+		int $pub_start_time = 0, int $pub_stop_time = 0): never {
 		// https://code.google.com/archive/p/pyrfeed/wikis/GoogleReaderAPI.wiki
 		// https://web.archive.org/web/20210126115837/https://blog.martindoms.com/2009/10/16/using-the-google-reader-api-part-2#feed
 		header('Content-Type: application/json; charset=UTF-8');
@@ -735,7 +748,7 @@ final class GReaderAPI {
 		};
 
 		[$type, $include_target, $state, $searches] =
-			self::streamContentsFilters($type, $include_target, $filter_target, $exclude_target, $start_time, $stop_time);
+			self::streamContentsFilters($type, $include_target, $filter_target, $exclude_target, $start_time, $stop_time, $pub_start_time, $pub_stop_time);
 
 		if ($continuation !== '0') {
 			$count++;	//Shift by one element
@@ -1209,6 +1222,9 @@ TXT;
 					if (!ctype_digit($continuation)) {
 						$continuation = '0';
 					}
+
+					$pub_start_time = is_numeric($_GET['pub_ot'] ?? null) ? (int)$_GET['pub_ot'] : 0;
+					$pub_stop_time = is_numeric($_GET['pub_nt'] ?? null) ? (int)$_GET['pub_nt'] : 0;
 					// [Modified] Capture excludeContent parameter
 					$excludeContent = isset($_GET['excludeContent']);
 
@@ -1231,17 +1247,17 @@ TXT;
 										$include_target = '';
 									}
 								}
-								// [Modified] Pass excludeContent
+								// [Modified] Pass excludeContent and pub times
 								self::streamContents($pathInfos[6], $include_target, $start_time, $stop_time,
-									$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent);
+									$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent, $pub_start_time, $pub_stop_time);
 							} elseif (isset($pathInfos[8], $pathInfos[9]) && $pathInfos[6] === 'user') {
 								if ($pathInfos[8] === 'state') {
 									if (in_array($pathInfos[9], ['com.google', 'org.freshrss'], true) && isset($pathInfos[10])) {
 										if (in_array($pathInfos[10], ['reading-list', 'starred', 'main', 'important'], true)) {
 											$include_target = '';
-											// [Modified] Pass excludeContent
+											// [Modified] Pass excludeContent and pub times
 											self::streamContents($pathInfos[10], $include_target, $start_time, $stop_time, $count, $order,
-												$filter_target, $exclude_target, $continuation, $excludeContent);
+												$filter_target, $exclude_target, $continuation, $excludeContent, $pub_start_time, $pub_stop_time);
 										}
 									}
 								} elseif ($pathInfos[8] === 'label') {
@@ -1251,16 +1267,16 @@ TXT;
 									} else {
 										$include_target = $pathInfos[9];
 									}
-									// [Modified] Pass excludeContent
+									// [Modified] Pass excludeContent and pub times
 									self::streamContents($pathInfos[8], $include_target, $start_time, $stop_time,
-										$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent);
+										$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent, $pub_start_time, $pub_stop_time);
 								}
 							}
 						} else {	//EasyRSS, FeedMe
 							$include_target = '';
-							// [Modified] Pass excludeContent
+							// [Modified] Pass excludeContent and pub times
 							self::streamContents('reading-list', $include_target, $start_time, $stop_time,
-								$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent);
+								$count, $order, $filter_target, $exclude_target, $continuation, $excludeContent, $pub_start_time, $pub_stop_time);
 						}
 					} elseif ($pathInfos[5] === 'items') {
 						if ($pathInfos[6] === 'ids' && is_string($_GET['s'] ?? null)) {
