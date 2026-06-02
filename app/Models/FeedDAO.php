@@ -428,6 +428,44 @@ class FreshRSS_FeedDAO extends Minz_ModelPdo {
 		return self::daoToFeeds($res);
 	}
 
+	public function listFeedsByIds(array $feedIds): array {
+		// 1. 如果ID列表为空，直接返回空数组，避免无效的数据库查询
+		if (empty($feedIds)) {
+			return [];
+		}
+
+		// 2. 动态构建SQL的 IN 子句，以支持任意数量的ID
+		//    例如: '?, ?, ?'
+		$inPlaceholders = str_repeat('?,', count($feedIds) - 1) . '?';
+
+		// 3. 构建完整的SQL查询语句
+		$sql = 'SELECT * FROM `_feed` WHERE id IN (' . $inPlaceholders . ')';
+
+		// 4. 使用预处理语句执行查询，以防止SQL注入
+		$stm = $this->pdo->prepare($sql);
+		if ($stm === false) {
+			Minz_Log::error('SQL error ' . __METHOD__ . ' (prepare failed)');
+			return [];
+		}
+
+		// 5. 执行查询
+		if ($stm->execute($feedIds)) {
+			$res = $stm->fetchAll(PDO::FETCH_ASSOC);
+			if ($res === false) {
+				return [];
+			}
+			/** @var list<array{id?:int,url?:string,kind?:int,category?:int,name?:string,website?:string,description?:string,lastUpdate?:int,priority?:int,
+			 * pathEntries?:string,httpAuth?:string,error?:int,ttl?:int,attributes?:string,cache_nbUnreads?:int,cache_nbEntries?:int}> $res */
+			
+			// 6. 复用现有的 `daoToFeeds` 方法将结果转换为对象
+			return self::daoToFeeds($res);
+		} else {
+			$info = $stm->errorInfo();
+			Minz_Log::error('SQL error ' . __METHOD__ . json_encode($info));
+			return [];
+		}
+	}
+
 	/** @return array<string,string> */
 	public function listFeedsNewestItemUsec(?int $id_feed = null): array {
 		$sql = <<<'SQL'
@@ -720,7 +758,7 @@ class FreshRSS_FeedDAO extends Minz_ModelPdo {
 
 	/**
 	 * @param array<array{id?:int,url?:string,kind?:int,category?:int,name?:string,website?:string,description?:string,lastUpdate?:int,priority?:int,
-	 * 	pathEntries?:string,httpAuth?:string,error?:int,ttl?:int,attributes?:string,cache_nbUnreads?:int,cache_nbEntries?:int}> $listDAO
+	 * 	pathEntries?:string,httpAuth?:string,error?:int|bool,ttl?:int,attributes?:string,cache_nbUnreads?:int,cache_nbEntries?:int}> $listDAO
 	 * @return array<int,FreshRSS_Feed> where the key is the feed ID
 	 */
 	public static function daoToFeeds(array $listDAO, ?int $catID = null): array {
